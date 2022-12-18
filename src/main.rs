@@ -400,11 +400,11 @@ impl OsmXmlReader {
 		rec.into_iter()
 	}
 
-	pub fn map_all<F1, F2, F3>(&mut self, mut node_cb: Option<Box<F1>>, mut way_cb: Option<Box<F2>>, mut rel_cb: Option<Box<F3>>) -> OkOrBox
+	pub fn map_all<F1, F2, F3>(&mut self, mut node_cb: Option<Box<F1>>, mut way_cb: Option<Box<F2>>, mut rel_cb: Option<Box<F3>>) -> OkOrBoxStatic
 		where
-			F1: FnMut(Node) -> OkOrBox,
-			F2: FnMut(Way) -> OkOrBox,
-			F3: FnMut(Relation) -> OkOrBox
+			F1: FnMut(Node) -> OkOrBoxStatic,
+			F2: FnMut(Way) -> OkOrBoxStatic,
+			F3: FnMut(Relation) -> OkOrBoxStatic
 	{
 		self.skip_nodes = node_cb.is_none();
 		self.skip_ways = way_cb.is_none();
