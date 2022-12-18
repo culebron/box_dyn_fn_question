@@ -409,6 +409,8 @@ impl OsmXmlReader {
 		self.skip_ways = way_cb.is_none();
 		self.skip_relations = rel_cb.is_none();
 
+		// this works fine if it's in the same thread.
+		// I tried doing self.in_background() instead and couldn't get the compiler pleased
 		for item in self.into_iter() {
 			match item? {
 				OsmObj::Node(n) => if let Some(ref mut ncb) = node_cb { ncb(n)?; },
@@ -449,7 +451,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 	let rcb = |_r: Relation| -> OkOrBox { rels_count +=1; Ok(()) };
 
 	let mut my_rdr = OsmXmlReader::from_path(&osm_xml_path)?;
+
 	my_rdr.map_all(Some(ncb), Some(wcb), Some(rcb))?;
+
+	// This will not work:
+	// my_rdr.map_all(Some(ncb), Some(wcb), None)?;
+	// Compiler rejects any kinds of type annotations
+
 	println!("nodes: {}, ways: {}, relations weren't counted", nodes_count, ways_count);
 	Ok(())
 }
