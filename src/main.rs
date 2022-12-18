@@ -210,6 +210,7 @@ pub struct OsmXmlReader {
 }
 
 type OkOrBox = Result<(), Box<dyn Error>>;
+type OkOrBoxStatic = Result<(), Box<dyn Error + 'static>>;
 pub type OsmXmlItem = Result<OsmObj, ReadError>;
 impl OsmXmlReader {
 	pub fn new(rd: BufReader<Box<dyn Read + Send>>) -> OsmXmlReader {
@@ -399,7 +400,7 @@ impl OsmXmlReader {
 		rec.into_iter()
 	}
 
-	pub fn map_all<F1, F2, F3>(&mut self, mut node_cb: Option<F1>, mut way_cb: Option<F2>, mut rel_cb: Option<F3>) -> OkOrBox
+	pub fn map_all<F1, F2, F3>(&mut self, mut node_cb: Option<Box<F1>>, mut way_cb: Option<Box<F2>>, mut rel_cb: Option<Box<F3>>) -> OkOrBox
 		where
 			F1: FnMut(Node) -> OkOrBox,
 			F2: FnMut(Way) -> OkOrBox,
@@ -451,8 +452,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 	let rcb = |_r: Relation| -> OkOrBox { rels_count +=1; Ok(()) };
 
 	let mut my_rdr = OsmXmlReader::from_path(&osm_xml_path)?;
-
-	my_rdr.map_all(Some(ncb), Some(wcb), Some(rcb))?;
+	my_rdr.map_all(Some(Box::new(ncb)), Some(Box::new(wcb)), None as Option<Box<dyn FnMut(Relation) -> OkOrBoxStatic>>)?;
 
 	// This will not work:
 	// my_rdr.map_all(Some(ncb), Some(wcb), None)?;
