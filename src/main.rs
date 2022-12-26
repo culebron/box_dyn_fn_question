@@ -17,7 +17,7 @@ where A: AutoStruct {
 	fn from_path(path: &str) -> Result<Self, Box<dyn Error>>
 		where Self: Sized;
 	// create a reader (ideally this should look like for loop, but not right now)
-	type FeatureReader: FeatureReader + Iterator<Item=A>;
+	type FeatureReader: FeatureReader + Iterator<Item=Result<A, Box<dyn Error>>>;
 	fn iter(&'a mut self) -> Result<Self::FeatureReader, Box<dyn Error>>;
 }
 
@@ -104,7 +104,7 @@ impl<'a, A> FeatureReader for GpkgLayer<'a, A> {
 
 impl<'a, A> Iterator for GpkgLayer<'a, A>
 where A: AutoStruct{
-	type Item = A;
+	type Item = Result<A, Box<dyn Error>>;
 	fn next(&mut self) -> Option<Self::Item> {
 		todo!()
 	}
@@ -160,40 +160,31 @@ impl<'a, A> FeatureReader for FgbFeatureReader<'a, A> {
 
 impl<'a, A> Iterator for FgbFeatureReader<'a, A>
 where A: AutoStruct {
-	type Item = A;
+	type Item = Result<A, Box<dyn Error>>;
 	fn next(&mut self) -> Option<Self::Item> {
-		todo!()
+		match self.next_feature() {
+			Ok(true) => Some(A::generate(self)),
+			_ => None,
+		}
 	}
 }
 
 // this should have some code to work with the drivers, like `from_driver` below
 trait AutoStruct {
-	fn generate<F: FeatureReader>(reader: &F) -> Self;
+	fn generate<F: FeatureReader>(reader: &F) -> Result<Self, Box<dyn Error>> where Self: Sized;
 }
 
+#[derive(Debug)]
 struct MyStruct {
-	id: i32,
+	x: i32,
 	geometry: Point
 }
 
 impl AutoStruct for MyStruct {
-	fn generate<F>(reader: &F) -> Self {
-		todo!()
-	}
-}
-impl MyStruct {
-	fn get_fields() -> Vec<String> {
-		vec!["id".to_string(), "geometry".to_string()]
-	}
-
-	// this is generic, but I should change this to using Box<dyn FeatureReader> inside here
-	// because this is chosen at runtime
-	fn from_driver<'a, D>(driver_iter: &'a D) -> Result<Self, Box<dyn Error>>
-	where D: FeatureReader {
-
+	fn generate<F: FeatureReader>(reader: &F) -> Result<Self, Box<dyn Error>> {
 		Ok(Self {
-			id: driver_iter.get_field_i32("num")?.unwrap(),
-			geometry: driver_iter.get_field_point("geometry")?.unwrap()
+			x: reader.get_field_i32("x")?.unwrap(),
+			geometry: reader.get_field_point("geometry")?.unwrap()
 		})
 	}
 }
@@ -218,6 +209,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 	}
 
 	let mut fd: FgbDriver<MyStruct> = FgbDriver::from_path("local.fgb")?;
+	for feature in fd.iter()? {
+		println!("{:?}", feature);
+	}
 	//let fdi = fd.iter()?;
 
 	//while fdi.next_feature()? {
@@ -226,32 +220,3 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	Ok(())
 }
-
-
-/*#[allow()]
-use std::{marker::PhantomData, error::Error};
-
-// this is the more general struct that tries opening the file
-// some crates make a stack of borrowing structs, so we'll need at least 2 layers
-// FormatDriver just opens it as far as borrowing allows
-// FeatureReader will read feature data
-
-trait FormatDriver<'a> {
-	fn from_path(path: &'a str) -> Result<Self, Box<dyn Error>>
-		where Self: Sized;
-	type FeatureReader: FeatureReader + Iterator;
-	fn iter(&'a mut self) -> Result<Self::FeatureReader, Box<dyn Error>>;
-}
-
-trait FeatureReader {
-	// forward the reader 1 record
-	fn next_feature(&mut self) -> Result<bool, Box<dyn Error>>; // Ok(false) -> end loop
-	// accessors sort of like in Serde
-	fn get_field_i32(&self, field_name: &str) -> Result<Option<i32>, Box<dyn Error>>;
-	fn get_field_point(&self, field_name: &str) -> Result<Option<Point>, Box<dyn Error>>;
-}
-
-fn main() {
-
-}
-*/
