@@ -1,14 +1,13 @@
 [package]
 name = "questionsample"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 [dependencies]
-bzip2 = "0.3"
-flate2 = "1.0"
-crossbeam-channel = "0.5"
+csv = "1.1"
+serde = {version = "1", features = ["derive"] }
+flatgeobuf = "3.24"
+regex="1.7"
 geo = "0.23"
-rstar = "0.9"
-proj="0.27"
-quick-xml = {version = "0.23", features = ["encoding"]}
-# ^ 0.23 because newer version does not compile in Ubuntu's rust
+gdal = "0.14"
+geozero = "0.9"

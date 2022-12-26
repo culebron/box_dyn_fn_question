@@ -1,55 +1,64 @@
-use std::{fs::{File}, marker::PhantomData, error::Error};
+use geozero::ToGeo;
+use flatgeobuf::{FgbReader, FallibleStreamingIterator, reader_state::FeaturesSelectedSeek, FgbFeature, FeatureProperties, GeometryType as FgbGeometryType};
+use geo::{Geometry, Point};
 use regex::Regex;
 
-use geo::{Geometry, Point};
-use geozero::ToGeo;
-use flatgeobuf::{FgbReader, FallibleStreamingIterator, reader_state::FeaturesSelectedSeek, FeatureProperties};
-use gdal::{Dataset, vector::{OwnedFeatureIterator, Feature as GdalFeature, FieldValue}};
+use gdal::{
+	Dataset, Metadata,
+// The `LayerAccess` trait enables reading of vector specific fields from the `Dataset`.
+	vector::{LayerAccess, OwnedFeatureIterator, Feature as GdalFeature, FieldValue},
+};
 
-// this is the more general struct that tries opening the file
-// some crates make a stack of borrowing structs, so we'll need at least 2 layers
-// FormatDriver just opens it as far as borrowing allows
-// FeatureReader will read feature data
+use std::{
+	io::{BufReader, BufWriter, A, Seek},
+	fs::{File, remove_file},
+	marker::PhantomData,
+	error::Error,
+	sync::Arc,
+};
 
-trait FormatDriver<'a> {
-	fn can_open(path: &str) -> bool; // this function should be called with a generic, but I don't care of this now
-	// actually opening
+
+trait FormatDriver<'a, A, F>
+	where A: AutoStruct<'a, F>,
+	F: FeatureReader<'a> + Iterator<Item = Result<A, Box<dyn Error>>> {
+	fn can_open(path: &str) -> bool;
 	fn from_path(path: &'a str) -> Result<Self, Box<dyn Error>>
 		where Self: Sized;
-	// create a reader (ideally this should look like for loop, but not right now)
-	type FeatureReader: FeatureReader<'a>;
+	//fn get_field_val<T>(&self, name: &str) -> T;
+	//fn next_feature<T>(&mut self) -> Option<Result<T, Box<dyn Error>>>;
+	type FeatureReader: FeatureReader<'a> + Iterator<Item = Result<A, Box<dyn Error>>>;
 	fn iter(&'a mut self) -> Result<Self::FeatureReader, Box<dyn Error>>;
 }
 
 trait FeatureReader<'a> {
-	// forward the reader 1 record
 	fn next_feature(&mut self) -> Result<bool, Box<dyn Error>>; // Ok(false) -> end loop
-	// accessors sort of like in Serde
 	fn get_field_i32(&self, field_name: &str) -> Result<Option<i32>, Box<dyn Error>>;
 	fn get_field_point(&self, field_name: &str) -> Result<Option<Point>, Box<dyn Error>>;
 }
 
+trait AutoStruct<'a, F>
+where F: FeatureReader<'a> {
+	fn create(reader: &F) -> Self;
+}
 
-// FORMAT DRIVER 1: GPKG (via GDAL)
 struct GpkgDriver<'a, T> {
 	fi: OwnedFeatureIterator,
 	p: PhantomData<&'a T>
+
 }
 
 const PATH_REGEXP:&str = r"^(?P<file_path>(?:.*/)?(?P<file_name>(?:.*/)?(?P<file_own_name>.*)\.(?P<extension>gpkg)))(?::(?P<layer_name>[a-z0-9_-]+))?$";
 
-impl<'a, T> FormatDriver<'a> for GpkgDriver<'a, T> {
+impl<'a, T, F> FormatDriver<'a, A, F> for GpkgDriver<'a, T> {
 	type FeatureReader = GpkgLayer<'a>;
 	fn can_open(path: &str) -> bool {
-		// the regexp is fixed, so it should crash only in tests
-		let re = Regex::new(PATH_REGEXP).unwrap();
+		let re = Regex::new(PATH_REGEXP).unwrap(); // the regexp is fixed, so it should crash only in tests
 		re.is_match(&path)
 	}
 
 	fn from_path(path: &'a str) -> Result<Self, Box<dyn Error>> {
 		let dataset = Dataset::open(path)?;
-		// TODO: choose layer from path expression or return error if can't choose
-		let layer = dataset.into_layer(0)?;
+		let layer = dataset.into_layer(0)?; // TODO: choose layer from path expression or return error if can't choose
 		let fi = layer.owned_features();
 		Ok(Self { fi, p: PhantomData })
 	}
@@ -66,6 +75,16 @@ struct GpkgLayer<'a> {
 	feature: Option<GdalFeature<'a>>
 }
 
+impl<'a, A> Iterator for GpkgLayer<'a>
+where A: AutoStruct<'a, F> {
+	type Item = Result<A, Box<dyn Error>>;
+	fn next(&self) -> Self::Item {
+		if self.next_feature().is_some() {
+			Some(A::create(&self))
+		} else { None }
+	}
+}
+
 impl<'a> FeatureReader<'a> for GpkgLayer<'a> {
 	fn next_feature(&mut self) -> Result<bool, Box<dyn Error>> {
 		if let Some(f) = self.fii.next() {
@@ -75,7 +94,7 @@ impl<'a> FeatureReader<'a> for GpkgLayer<'a> {
 		else { Ok(false) }
 	}
 	fn get_field_i32(&self, field_name: &str) -> Result<Option<i32>, Box<dyn Error>> {
-		match match match &self.feature {
+		match match match self.feature {
 			Some(f) => f.field(field_name)?,
 			None => panic!("no feature but reading field")
 		} {
@@ -88,29 +107,34 @@ impl<'a> FeatureReader<'a> for GpkgLayer<'a> {
 		}
 	}
 
-	fn get_field_point(&self, _field_name: &str) -> Result<Option<Point>, Box<dyn Error>> {
-		match match &self.feature {
-			Some(f) => Some(f.geometry().to_geo()?),
-			None => panic!("no feature read yet"),
-			_ => None::<Geometry> // TODO: this is just to fix the non-exhaustive patterns
+	fn get_field_point(&self, field_name: &str) -> Result<Option<Point>, Box<dyn Error>> {
+		match match self.feature {
+			Some(f) => f.geometry().to_geo(),
+			None => panic!("no feature read yet")
 		} {
-			Some(Geometry::Point(g)) => Ok(Some(g)),
-			// just to fix the return types/exhaustiveness
-			None => Ok(None),
-			_ => panic!("what have I just got?")
+			Ok(Geometry::Point(g)) => Ok(Some(g))
 		}
 	}
 }
 
-// FORMAT DRIVER 2: FGB (FlatGeobuf)
-// this format wants &File as input,
-// so I must either a) open the file outside, or b) have 2 structs
+impl<'a, T> GpkgDriver<'a, T> {
+	fn iter_features<U>(&mut self) -> &Self {
+		// self // тут надо прочитать поля структуры, которую подают, и сделать какие-нибудь коллбэки?
+		self
+	}
+
+	fn next_feature<U>(&mut self) -> Option<Result<T, Box<dyn Error>>> {
+		todo!()
+	}
+}
+
+
 struct FgbDriver<'a> {
 	fp: File,
 	features: Option<FgbReader<'a, File, FeaturesSelectedSeek>>
 }
 
-impl<'a> FormatDriver<'a> for FgbDriver<'a> {
+impl<'a, F> FormatDriver<'a, A, F> for FgbDriver<'a> {
 	type FeatureReader = FgbFeatureReader<'a>;
 	fn can_open(path: &str) -> bool {
 		path.ends_with(".fgb")
@@ -140,7 +164,7 @@ impl<'a> FeatureReader<'a> for FgbFeatureReader<'a> {
 		let ft = self.features_selected.cur_feature();
 		Ok(Some(ft.property::<i32>(field_name)?))
 	}
-	fn get_field_point(&self, _field_name: &str) -> Result<Option<Point>, Box<dyn Error>> {
+	fn get_field_point(&self, field_name: &str) -> Result<Option<Point>, Box<dyn Error>> {
 		let ft = self.features_selected.cur_feature();
 		match ft.to_geo()? {
 			Geometry::Point(p) => Ok(Some(p)),
@@ -149,33 +173,20 @@ impl<'a> FeatureReader<'a> for FgbFeatureReader<'a> {
 	}
 }
 
-// this should have some code to work with the drivers, like `from_driver` below
-trait AutoStruct {}
-
 struct MyStruct {
 	id: i32,
 	geometry: Point
 }
 
-impl MyStruct {
-	fn get_fields() -> Vec<String> {
-		vec!["id".to_string(), "geometry".to_string()]
-	}
-
-	// this is generic, but I should change this to using Box<dyn FeatureReader> inside here
-	// because this is chosen at runtime
-	fn from_driver<'a, D>(driver_iter: &'a D) -> Result<Self, Box<dyn Error>>
-	where D: FeatureReader<'a> {
-
+impl<'a, F> AutoStruct<'a, F> for MyStruct
+where F: FeatureReader<'a> {
+	fn create(reader: &F) -> Result<Self, Box<dyn Error>> {
 		Ok(Self {
-			id: driver_iter.get_field_i32("num")?.unwrap(),
-			geometry: driver_iter.get_field_point("geometry")?.unwrap()
+			id: reader.get_field_i32(0)?,
+			geometry: reader.get_field_point(1)?
 		})
 	}
 }
-
-// there'll be a function that will walk down the list of formats and check which one can open the file
-// then call MyStruct::from_driver.
 
 
 fn main() -> Result<(), Box<dyn Error>> {
