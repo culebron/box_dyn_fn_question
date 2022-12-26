@@ -26,9 +26,15 @@ trait FeatureReader {
 	fn next_feature(&mut self) -> Result<bool, Box<dyn Error>>; // Ok(false) -> end loop
 	// accessors sort of like in Serde
 	fn get_field_i32(&self, field_name: &str) -> Result<Option<i32>, Box<dyn Error>>;
+	fn get_field_i64(&self, field_name: &str) -> Result<Option<i64>, Box<dyn Error>>;
 	fn get_field_point(&self, field_name: &str) -> Result<Option<Point>, Box<dyn Error>>;
 }
 
+
+// this should have some code to work with the drivers, like `from_driver` below
+trait AutoStruct {
+	fn generate<F: FeatureReader>(reader: &F) -> Result<Self, Box<dyn Error>> where Self: Sized;
+}
 
 // FORMAT DRIVER 1: GPKG (via GDAL)
 struct GpkgDriver<'a, A> {
@@ -75,6 +81,19 @@ impl<'a, A> FeatureReader for GpkgLayer<'a, A> {
 		else { Ok(false) }
 	}
 	fn get_field_i32(&self, field_name: &str) -> Result<Option<i32>, Box<dyn Error>> {
+		match match match &self.feature {
+			Some(f) => f.field(field_name)?,
+			None => panic!("no feature but reading field")
+		} {
+			Some(v) => v,
+			None => return Ok(None),
+		} {
+			FieldValue::IntegerValue(v) => Ok(Some(v.into())),
+			FieldValue::Integer64Value(v) => Ok(Some(v.try_into()?)),
+			_ => panic!("wrong format")
+		}
+	}
+	fn get_field_i64(&self, field_name: &str) -> Result<Option<i64>, Box<dyn Error>> {
 		match match match &self.feature {
 			Some(f) => f.field(field_name)?,
 			None => panic!("no feature but reading field")
@@ -149,6 +168,10 @@ impl<'a, A> FeatureReader for FgbFeatureReader<'a, A> {
 		let ft = self.features_selected.cur_feature();
 		Ok(Some(ft.property::<i32>(field_name)?))
 	}
+	fn get_field_i64(&self, field_name: &str) -> Result<Option<i64>, Box<dyn Error>> {
+		let ft = self.features_selected.cur_feature();
+		Ok(Some(ft.property::<i64>(field_name)?))
+	}
 	fn get_field_point(&self, _field_name: &str) -> Result<Option<Point>, Box<dyn Error>> {
 		let ft = self.features_selected.cur_feature();
 		match ft.to_geo()? {
@@ -169,21 +192,16 @@ where A: AutoStruct {
 	}
 }
 
-// this should have some code to work with the drivers, like `from_driver` below
-trait AutoStruct {
-	fn generate<F: FeatureReader>(reader: &F) -> Result<Self, Box<dyn Error>> where Self: Sized;
-}
-
 #[derive(Debug)]
 struct MyStruct {
-	x: i32,
+	x: i64,
 	geometry: Point
 }
 
 impl AutoStruct for MyStruct {
 	fn generate<F: FeatureReader>(reader: &F) -> Result<Self, Box<dyn Error>> {
 		Ok(Self {
-			x: reader.get_field_i32("x")?.unwrap(),
+			x: reader.get_field_i64("x")?.unwrap(),
 			geometry: reader.get_field_point("geometry")?.unwrap()
 		})
 	}
