@@ -11,19 +11,18 @@ use gdal::{Dataset, vector::{OwnedFeatureIterator, Feature as GdalFeature, Field
 // FormatDriver just opens it as far as borrowing allows
 // FeatureReader will read feature data
 
-trait FormatDriver<'a, A>
-where A: AutoStruct {
+trait FormatDriver<'a> {
 	fn can_open(path: &str) -> bool;
 	fn from_path(path: &str) -> Result<Self, Box<dyn Error>>
 		where Self: Sized;
 	// create a reader (ideally this should look like for loop, but not right now)
-	type FeatureReader: FeatureReader + Iterator<Item=Result<A, Box<dyn Error>>>;
+	type FeatureReader: FeatureReader<'a>;
 	fn iter(&'a mut self) -> Result<Self::FeatureReader, Box<dyn Error>>;
 }
 
-trait FeatureReader {
+trait FeatureReader<'a> {
 	// forward the reader 1 record
-	fn next_feature(&mut self) -> Result<bool, Box<dyn Error>>; // Ok(false) -> end loop
+	fn forward(&mut self) -> Result<bool, Box<dyn Error>>; // Ok(false) -> end loop
 	// accessors sort of like in Serde
 	fn get_field_i32(&self, field_name: &str) -> Result<Option<i32>, Box<dyn Error>>;
 	fn get_field_i64(&self, field_name: &str) -> Result<Option<i64>, Box<dyn Error>>;
@@ -32,20 +31,19 @@ trait FeatureReader {
 
 
 // this should have some code to work with the drivers, like `from_driver` below
-trait AutoStruct {
-	fn generate<F: FeatureReader>(reader: &F) -> Result<Self, Box<dyn Error>> where Self: Sized;
+trait AutoStruct<'a> {
+	fn generate<F: FeatureReader<'a>>(reader: &F) -> Result<Self, Box<dyn Error>> where Self: Sized;
 }
 
 // FORMAT DRIVER 1: GPKG (via GDAL)
-struct GpkgDriver<'a, A> {
+struct GpkgDriver {
 	fi: OwnedFeatureIterator,
-	_p: PhantomData<&'a A>
 }
 
 const PATH_REGEXP:&str = r"^(?P<file_path>(?:.*/)?(?P<file_name>(?:.*/)?(?P<file_own_name>.*)\.(?P<extension>gpkg)))(?::(?P<layer_name>[a-z0-9_-]+))?$";
 
-impl<'a, A: AutoStruct> FormatDriver<'a, A> for GpkgDriver<'a, A> {
-	type FeatureReader = GpkgLayer<'a, A>;
+impl<'a> FormatDriver<'a> for GpkgDriver {
+	type FeatureReader = GpkgLayer<'a>;
 	fn can_open(path: &str) -> bool {
 		let re = Regex::new(PATH_REGEXP).unwrap();
 		re.is_match(&path)
@@ -56,24 +54,23 @@ impl<'a, A: AutoStruct> FormatDriver<'a, A> for GpkgDriver<'a, A> {
 		// TODO: choose layer from path expression or return error if can't choose
 		let layer = dataset.into_layer(0)?;
 		let fi = layer.owned_features();
-		Ok(Self { fi, _p: PhantomData })
+		Ok(Self { fi })
 	}
 
-	fn iter(&'a mut self) -> Result<GpkgLayer<'a, A>, Box<dyn Error>> {
+	fn iter(&'a mut self) -> Result<GpkgLayer<'a>, Box<dyn Error>> {
 		let fii = self.fi.into_iter();
-		Ok(GpkgLayer { fii, fields: vec![], feature: None, _p: PhantomData })
+		Ok(GpkgLayer { fii, fields: vec![], feature: None })
 	}
 }
 
-struct GpkgLayer<'a, A> {
+struct GpkgLayer<'a> {
 	fii: &'a mut OwnedFeatureIterator,
 	fields: Vec<String>,
 	feature: Option<GdalFeature<'a>>,
-	_p: PhantomData<&'a A>
 }
 
-impl<'a, A> FeatureReader for GpkgLayer<'a, A> {
-	fn next_feature(&mut self) -> Result<bool, Box<dyn Error>> {
+impl<'a> FeatureReader<'a> for GpkgLayer<'a> {
+	fn forward(&mut self) -> Result<bool, Box<dyn Error>> {
 		if let Some(f) = self.fii.next() {
 			self.feature.replace(f);
 			Ok(true)
@@ -121,46 +118,37 @@ impl<'a, A> FeatureReader for GpkgLayer<'a, A> {
 	}
 }
 
-impl<'a, A> Iterator for GpkgLayer<'a, A>
-where A: AutoStruct{
-	type Item = Result<A, Box<dyn Error>>;
-	fn next(&mut self) -> Option<Self::Item> {
-		todo!()
-	}
-}
 // FORMAT DRIVER 2: FGB (FlatGeobuf)
 // this format wants &File as input,
 // so I must either a) open the file outside, or b) have 2 structs
-struct FgbDriver<'a, A> {
+struct FgbDriver<'a> {
 	fp: File,
 	features: Option<FgbReader<'a, File, FeaturesSelectedSeek>>,
-	_p: PhantomData<A>
 }
 
-impl<'a, A: AutoStruct> FormatDriver<'a, A> for FgbDriver<'a, A> {
-	type FeatureReader = FgbFeatureReader<'a, A>;
+impl<'a> FormatDriver<'a> for FgbDriver<'a> {
+	type FeatureReader = FgbFeatureReader<'a>;
 	fn can_open(path: &str) -> bool {
 		path.ends_with(".fgb")
 	}
 
 	fn from_path(path: &str) -> Result<Self, Box<dyn Error>> {
 		let fp = File::open(path)?;
-		Ok(Self { fp, features: None, _p: PhantomData })
+		Ok(Self { fp, features: None })
 	}
 
 	fn iter(&'a mut self) -> Result<Self::FeatureReader, Box<dyn Error>> {
 		let features_selected = FgbReader::open(&mut self.fp)?.select_all()?;
-		Ok(Self::FeatureReader { features_selected, _p: PhantomData })
+		Ok(Self::FeatureReader { features_selected })
 	}
 }
 
-struct FgbFeatureReader<'a, A> {
+struct FgbFeatureReader<'a> {
 	features_selected: FgbReader<'a, File, FeaturesSelectedSeek>,
-	_p: PhantomData<A>
 }
 
-impl<'a, A> FeatureReader for FgbFeatureReader<'a, A> {
-	fn next_feature(&mut self) -> Result<bool, Box<dyn Error>> {
+impl<'a> FeatureReader<'a> for FgbFeatureReader<'a> {
+	fn forward(&mut self) -> Result<bool, Box<dyn Error>> {
 		// getters should use self.features_selected.get() to get current feature
 		Ok(self.features_selected.next()?.is_some())
 	}
@@ -181,35 +169,20 @@ impl<'a, A> FeatureReader for FgbFeatureReader<'a, A> {
 	}
 }
 
-impl<'a, A> Iterator for FgbFeatureReader<'a, A>
-where A: AutoStruct {
-	type Item = Result<A, Box<dyn Error>>;
-	fn next(&mut self) -> Option<Self::Item> {
-		match self.next_feature() {
-			Ok(true) => Some(A::generate(self)),
-			_ => None,
-		}
-	}
-}
-
 #[derive(Debug)]
 struct MyStruct {
 	x: i64,
 	geometry: Point
 }
 
-impl AutoStruct for MyStruct {
-	fn generate<F: FeatureReader>(reader: &F) -> Result<Self, Box<dyn Error>> {
+impl<'a> AutoStruct<'a> for MyStruct {
+	fn generate<F: FeatureReader<'a>>(reader: &F) -> Result<Self, Box<dyn Error>> {
 		Ok(Self {
 			x: reader.get_field_i64("x")?.unwrap(),
 			geometry: reader.get_field_point("geometry")?.unwrap()
 		})
 	}
 }
-
-// there'll be a function that will walk down the list of formats and check which one can open the file
-// then call MyStruct::from_driver.
-
 
 fn main() -> Result<(), Box<dyn Error>> {
 	let p = vec![
@@ -222,19 +195,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 		"aosnetuh"
 	];
 	for i in p.iter() {
-		if GpkgDriver::<'_, MyStruct>::can_open(i) { println!("Gpkg can open {:?}", i); }
-		if FgbDriver::<'_, MyStruct>::can_open(i) { println!("Fgb can open {:?}", i); }
+		if GpkgDriver::can_open(i) {
+			println!("Gpkg can open {:?}", i);
+			let mut x = GpkgDriver::from_path(i)?;
+			let mut y = x.iter()?;
+			if y.forward()? {
+				println!("have read 1 record");
+			}
+		}
+		if FgbDriver::<'_>::can_open(i) {
+			println!("Fgb can open {:?}", i);
+			let mut x = FgbDriver::from_path(i)?;
+			let mut y = x.iter()?;
+			if y.forward()? {
+				println!("have read 1 record");
+			}
+		}
 	}
-
-	let mut fd: FgbDriver<MyStruct> = FgbDriver::from_path("local.fgb")?;
-	for feature in fd.iter()? {
-		println!("{:?}", feature);
-	}
-	//let fdi = fd.iter()?;
-
-	//while fdi.next_feature()? {
-
-	//}
-
 	Ok(())
 }
