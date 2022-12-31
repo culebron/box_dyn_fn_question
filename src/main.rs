@@ -60,13 +60,12 @@ impl<'a> FormatDriver for GpkgDriver<'a> {
 
 	fn iter(&mut self) -> Result<Self::Layer, Box<dyn Error>> {
 		let fii = self.fi.into_iter();
-		Ok(GpkgLayer { fii, fields: vec![], feature: None })
+		Ok(GpkgLayer { fii, feature: None })
 	}
 }
 
 struct GpkgLayer<'a> {
 	fii: &'a mut OwnedFeatureIterator,
-	fields: Vec<String>,
 	feature: Option<GdalFeature<'a>>,
 }
 
